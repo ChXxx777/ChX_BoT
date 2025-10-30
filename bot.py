@@ -1,15 +1,15 @@
 import os
+
 os.environ["DISCORD_NO_AUDIO"] = "true"
 os.environ["PYTHONNOUSERSITE"] = "1"
 
-
 import asyncio
 from typing import Optional
-
 from dotenv import load_dotenv
-import discord
-from discord import app_commands
-from discord.ext import commands
+import nextcord as discord
+from nextcord import app_commands
+from nextcord.ext import commands
+
 
 # --------- CARREGA VARIÁVEIS (.env local) ---------
 load_dotenv()  # no Render não é obrigatório; lá use Environment Variables
