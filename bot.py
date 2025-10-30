@@ -1,5 +1,7 @@
 import os
-os.environ["DISCORD_NO_AUDIO"] = "1"
+os.environ["DISCORD_NO_AUDIO"] = "true"
+os.environ["PYTHONNOUSERSITE"] = "1"
+
 
 import asyncio
 from typing import Optional
