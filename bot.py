@@ -1,152 +1,161 @@
 import os
-
-os.environ["DISCORD_NO_AUDIO"] = "true"
-os.environ["PYTHONNOUSERSITE"] = "1"
-
-import asyncio
-from typing import Optional
 from dotenv import load_dotenv
-import nextcord as discord
-from nextcord import app_commands
-from nextcord.ext import commands
+import interactions
+from interactions import slash_command, SlashContext, listen, Intents, Embed, OptionType
+from interactions import slash_option, Channel, Permissions
 
 
-# --------- CARREGA VARIÁVEIS (.env local) ---------
-load_dotenv()  # no Render não é obrigatório; lá use Environment Variables
+# ----- CARREGA VARIÁVEIS .env (local) -----
+# No Render, ele ignora o .env e usa Environment Variables
+load_dotenv()
 
-TOKEN = os.getenv("DISCORD_TOKEN")              # obrigatório
-GUILD_ID = os.getenv("GUILD_ID")                # opcional (sync instantâneo na guild)
-PREFIX = os.getenv("PREFIX", "!")               # opcional (para !oi e futuros comandos de texto)
-OWNER_ID = os.getenv("OWNER_ID")                # opcional
+TOKEN = os.getenv("DISCORD_TOKEN")        # obrigatório
+GUILD_ID = os.getenv("GUILD_ID")          # opcional (pra sync mais rápido)
+PREFIX = os.getenv("PREFIX", "!")         # pra comando !oi
+OWNER_ID = os.getenv("OWNER_ID")          # opcional
 
-# Auto-cargo / Boas-vindas (se não usar, deixe em branco)
-AUTO_ROLE_ID = os.getenv("CARGO_ID")            # ID do cargo para novos membros
-WELCOME_CHANNEL_ID = os.getenv("CANAL_ID")      # ID do canal de boas-vindas
-LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")    # ID do canal de logs ao iniciar (opcional)
+AUTO_ROLE_ID = os.getenv("CARGO_ID")      # cargo automático para novos membros
+WELCOME_CHANNEL_ID = os.getenv("CANAL_ID")  # canal de boas-vindas
+LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")  # canal de log inicial
 
-# --------- INTENTS E BOT ---------
-intents = discord.Intents.default()
-intents.message_content = True    # para ler mensagens de texto (ex: !oi)
-intents.members = True            # para on_member_join
 
-bot = commands.Bot(
-    command_prefix=PREFIX,
-    intents=intents,
-    allowed_mentions=discord.AllowedMentions(everyone=False, roles=False)  # evita @everyone acidental
-)
+# ----- CONFIGURA O BOT -----
+# Precisamos de intents pra ver membros e mensagens
+intents = Intents.DEFAULT | Intents.GUILD_MEMBERS | Intents.MESSAGE_CONTENT
+bot = interactions.Client(token=TOKEN, intents=intents)
 
-# --------- EVENTOS ---------
-@bot.event
+
+# ----- HELPER: mandar mensagem de log se canal existir -----
+async def send_log_message(text: str):
+    if not LOG_CHANNEL_ID:
+        return
+    try:
+        channel = await bot.fetch_channel(int(LOG_CHANNEL_ID))
+        if channel:
+            await channel.send(text)
+    except Exception as e:
+        print("Falha ao enviar log:", e)
+
+
+# ----- EVENTO: BOT PRONTO -----
+@listen()
 async def on_ready():
-    print(f"✅ Logado como {bot.user} (id: {bot.user.id})")
+    print(f"✅ Bot {bot.me} está online!")
+    await send_log_message(f"🚀 **{bot.me}** está online e pronto para uso!")
+
+
+# ----- EVENTO: NOVO MEMBRO ENTRA -----
+@listen()
+async def on_member_add(member):
     try:
-        # Sincroniza slash commands
-        if GUILD_ID:
-            guild = discord.Object(id=int(GUILD_ID))
-            bot.tree.copy_global_to(guild=guild)       # copia comandos globais para a guild (aparição instantânea)
-            synced = await bot.tree.sync(guild=guild)
-            print(f"🔁 Comandos sincronizados APENAS na guild {GUILD_ID}: {len(synced)}")
-        else:
-            synced = await bot.tree.sync()             # globais (podem demorar até ~1h a aparecer)
-            print(f"🌍 Comandos globais sincronizados: {len(synced)}")
+        # dar cargo automático
+        if AUTO_ROLE_ID:
+            try:
+                role_id_int = int(AUTO_ROLE_ID)
+                await member.add_role(role_id_int, reason="Cargo automático de boas-vindas")
+                print(f"✅ Dei o cargo {role_id_int} para {member.user.username}")
+            except Exception as e:
+                print("⚠️ Erro ao dar cargo automático:", e)
+
+        # mensagem de boas-vindas
+        if WELCOME_CHANNEL_ID:
+            try:
+                ch = await bot.fetch_channel(int(WELCOME_CHANNEL_ID))
+                if ch:
+                    embed = Embed(
+                        title="👋 Seja bem-vindo(a)!",
+                        description="🫶 Servidor do seu amigo ChX!",
+                        color=0xFFD700  # dourado
+                    )
+                    embed.set_thumbnail(url=member.user.avatar_url)
+                    embed.set_footer(
+                        text=f"Bem-vindo(a) à comunidade, {member.user.username}!",
+                        icon_url=member.user.avatar_url
+                    )
+
+                    await ch.send(
+                        content=f"👋 Seja bem-vindo(a) <@{member.user.id}>!",
+                        embeds=embed
+                    )
+                    print(f"📨 Boas-vindas enviadas para {member.user.username}")
+            except Exception as e:
+                print("⚠️ Erro ao enviar boas-vindas:", e)
+
     except Exception as e:
-        print("Erro ao sincronizar comandos:", e)
-
-    # Loga no canal de logs (se configurado)
-    try:
-        if LOG_CHANNEL_ID:
-            ch = bot.get_channel(int(LOG_CHANNEL_ID))
-            if ch:
-                await ch.send(f"🚀 **{bot.user}** está online e pronto para uso!")
-    except Exception as e:
-        print("Aviso: falha ao enviar mensagem no canal de logs:", e)
+        print("❌ Erro geral em on_member_add:", e)
 
 
-@bot.event
-async def on_message(msg: discord.Message):
-    # ignora outros bots
+# ----- COMANDO DE TEXTO NO CHAT (!oi) -----
+@listen()
+async def on_message_create(event):
+    msg = event.message
+    # ignora bot
     if msg.author.bot:
         return
 
-    # exemplo simples de comando de texto
-    if msg.content.lower() == f"{PREFIX}oi":
-        await msg.reply("👋 Olá! Use **/ping** ou **/anunciar** para testar.")
-
-    # mantém processamento de comandos/extensões
-    await bot.process_commands(msg)
-
-
-@bot.event
-async def on_member_join(member: discord.Member):
-    """Dá cargo automático e envia boas-vindas com embed (se IDs estiverem configurados)."""
-    try:
-        # Auto-cargo
-        if AUTO_ROLE_ID:
-            role = member.guild.get_role(int(AUTO_ROLE_ID))
-            if role:
-                await member.add_roles(role, reason="Cargo automático de boas-vindas")
-                print(f"✅ Dei o cargo '{role.name}' para {member} ({member.id})")
-            else:
-                print("⚠️ AUTO_ROLE_ID configurado, mas cargo não encontrado.")
-
-        # Boas-vindas (embed)
-        if WELCOME_CHANNEL_ID:
-            canal = member.guild.get_channel(int(WELCOME_CHANNEL_ID))
-            if canal:
-                embed = discord.Embed(
-                    title="<:DcChX3:1427835778700017725> Seja Bem-Vindo(a)! <:DcChX3:1427835778700017725>",
-                    description="🫶 **Servidor do seu amigo ChX!**",
-                    color=discord.Color.from_rgb(255, 215, 0)  # dourado
-                )
-                embed.set_thumbnail(url=member.display_avatar.url)
-                embed.set_footer(
-                    text=f"Bem-vindo(a) à comunidade, {member.name}!",
-                    icon_url=member.display_avatar.url
-                )
-                await canal.send(content=f"👋 Seja bem-vindo(a) {member.mention}!", embed=embed)
-                print(f"📨 Embed de boas-vindas enviado em #{canal.name}")
-            else:
-                print("⚠️ WELCOME_CHANNEL_ID configurado, mas canal não encontrado.")
-    except discord.Forbidden:
-        print("⚠️ Sem permissão para dar cargo/mandar mensagem de boas-vindas (verifique permissões e hierarquia).")
-    except Exception as e:
-        print("❌ Erro no on_member_join:", e)
-
-# --------- SLASH COMMANDS ---------
-@bot.tree.command(name="ping", description="Mostra a latência do bot.")
-async def ping(interaction: discord.Interaction):
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    api_ms = round(bot.latency * 1000)
-    await interaction.followup.send(f"🏓 Pong! Latência de API: **{api_ms}ms**", ephemeral=True)
+    # comando !oi
+    if msg.content.strip().lower() == f"{PREFIX}oi":
+        try:
+            await msg.reply("👋 Olá! Use /ping ou /anunciar pra testar.")
+        except Exception as e:
+            print("Erro respondendo !oi:", e)
 
 
-@bot.tree.command(name="anunciar", description="Envia um anúncio formatado.")
-@app_commands.describe(
-    titulo="Título do anúncio",
-    mensagem="Mensagem principal",
-    quando="Data/horário (opcional)",
-    canal="Canal de destino (opcional)"
+# ----- SLASH: /ping -----
+@slash_command(
+    name="ping",
+    description="Mostra a latência do bot.",
+    scopes=[int(GUILD_ID)] if GUILD_ID else None
+)
+async def ping(ctx: SlashContext):
+    # interactions não tem bot.latency, então vamos só responder fixo
+    await ctx.send(
+        f"🏓 Pong! Estou vivo e respondendo, {ctx.author.mention}!",
+        ephemeral=True
+    )
+
+
+# ----- SLASH: /anunciar -----
+@slash_command(
+    name="anunciar",
+    description="Envia um anúncio formatado.",
+    scopes=[int(GUILD_ID)] if GUILD_ID else None,
+    default_member_permissions=Permissions.MANAGE_MESSAGES,  # exige Gerenciar Mensagens
+)
+@slash_option(
+    name="titulo",
+    description="Título do anúncio",
+    required=True,
+    opt_type=OptionType.STRING
+)
+@slash_option(
+    name="mensagem",
+    description="Mensagem principal",
+    required=True,
+    opt_type=OptionType.STRING
+)
+@slash_option(
+    name="quando",
+    description="Data/horário (opcional)",
+    required=False,
+    opt_type=OptionType.STRING
+)
+@slash_option(
+    name="canal",
+    description="Canal de destino (opcional)",
+    required=False,
+    opt_type=OptionType.CHANNEL
 )
 async def anunciar(
-    interaction: discord.Interaction,
+    ctx: SlashContext,
     titulo: str,
     mensagem: str,
-    quando: Optional[str] = None,
-    canal: Optional[discord.TextChannel] = None
+    quando: str = None,
+    canal: Channel = None
 ):
     try:
-        # responde já para não estourar timeout
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        destino = canal or ctx.channel
 
-        # permissão mínima de quem usa o comando (ajuste/remova se não quiser)
-        if not interaction.user.guild_permissions.manage_messages:
-            await interaction.followup.send(
-                "❌ Você precisa da permissão **Gerenciar Mensagens** para usar este comando.",
-                ephemeral=True
-            )
-            return
-
-        destino = canal or interaction.channel
         texto = (
             f"**<a:coroaWhite:1432554574891188294>  〔 CHX 〕APRESENTA:** {titulo}\n"
             f"{mensagem}\n"
@@ -155,24 +164,21 @@ async def anunciar(
             texto += f"🕒 **Quando:** {quando}"
 
         await destino.send(texto)
-        await interaction.followup.send(f"✅ Anúncio enviado em {destino.mention}.", ephemeral=True)
-
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "⚠️ Não tenho permissão para enviar mensagens nesse canal. "
-            "Conceda **Enviar Mensagens** para o bot e tente novamente.",
+        await ctx.send(
+            f"✅ Anúncio enviado em {destino.mention}.",
             ephemeral=True
         )
+
     except Exception as e:
         print("Erro em /anunciar:", repr(e))
-        await interaction.followup.send("⚠️ Ocorreu um erro ao tentar enviar o anúncio.", ephemeral=True)
+        await ctx.send(
+            "⚠️ Ocorreu um erro ao tentar enviar o anúncio.",
+            ephemeral=True
+        )
 
-# --------- EXECUÇÃO ---------
-async def main():
-    if not TOKEN:
-        raise RuntimeError("❌ Falta DISCORD_TOKEN (defina no .env local ou em Environment Variables do Render).")
-    async with bot:
-        await bot.start(TOKEN)
 
+# ----- INICIAR O BOT -----
 if __name__ == "__main__":
-    asyncio.run(main())
+    if not TOKEN:
+        raise RuntimeError("❌ Coloque DISCORD_TOKEN no .env / Render Vars")
+    bot.start()  # mantém rodando
